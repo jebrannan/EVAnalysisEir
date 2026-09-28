@@ -1,0 +1,174 @@
+---
+title: "Presentation section"
+author: "Brannan Jio"
+date: "2026-09-10"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(webshot2)
+```
+
+We want to find any significant links with certain statistics from the proportion of cars registered in a given year to be EV's. In order to do this we first had to grab our data which was, from the year 2024; the amount of cars registered by engine type, the average annual income, the population density, the charging stations per square metre, the grants for home electric chargers given per person, the average distance to the nearest hub city and the centroid distance to Dublin, all for each county in the Republic of Ireland. We used the republic as our data set due to common law and policy. We do note that this may give certain innacuracies near the border where there may be charging stations nearer across the border. It is also important to add that the nearest hub city will include cities in the north for example Derry being the nearest to Donegal.
+
+We first plot a couple statistics against each other in order to notice any trends, however the first clear trend that pops out is that most plots contain a clear outlier (Obviously Dublin but will be shown methodically later) and also seems to be occasionally split into groups.
+
+```{r echo = FALSE}
+data <- read.csv("~/RMDs/counties.csv")
+
+
+par(mfrow = c(2,2))
+plot(data$mean_income_2024,data$ev_proportion_24,xlab = "Mean Income in 2024",ylab = "Proportion of EV's (Reg. 2024")
+plot(data$pop_density_psqm,data$ev_proportion_24,ylab ="Proportion of EV's (Reg. 2024)",xlab = "Population Density (ppsqm)")
+plot(data$charge_loc_psqm,data$ev_proportion_24,ylab = "Proportion of EV's (Reg. 2024)",xlab = "Charging location (lpsqm)")
+plot(data$AREA,data$ev_proportion_24,ylab = "Proportion of EV's (Reg. 2024)",xlab ="AREA (sqm)")
+
+```
+
+This means that there are certain categories of counties which behave differently, in order to seperate these using proper methodology we use k-means clustering. This essentialy plots each county in n-space (n = 12) and by grouping them into all possible k groupings and measuring with grouping has the smallest average square distance to the centre of said grouping. In order to find out which k is optimal we use the "elbow" method
+
+```{r echo = FALSE}
+library(dplyr)
+cluster_data <- data %>%
+  select(AREA, mean_income_2024, population_22, Mean_Dist_to_HubCity_km, 
+         ev_proportion_24, hybrid_proportion_24, grant_pp, 
+         pop_density_psqm, charge_loc_psqm, grant_pevpc) %>%
+  na.omit() 
+
+
+cluster_scaled <- scale(cluster_data)
+
+
+wss <- sapply(1:10, function(k) {
+  kmeans(cluster_scaled, centers = k, nstart = 25)$tot.withinss
+})
+
+
+
+plot(1:10, wss, type = "b", pch = 19, 
+     xlab = "Number of Clusters", 
+     ylab = "Within-Cluster Sum of Squares",
+     main = "Elbow Method for Optimal k")
+
+
+```
+
+We essentialy find the sharpest corner on the graph representing the biggest jump in sum of square distance, here can see it is roughly at 3, we could also reasonably choose 2 however this just splits the data into Dublin and other counties. This may provide insight but tests show that three clusters are more affective.
+
+We check our three clusters by graphing them over three variables to see if they represent significant seperation.
+
+```{r echo = FALSE}
+library(plotly)
+library(dplyr)
+plot_ly(data, 
+        x = ~mean_income_2024, 
+        y = ~Mean_Dist_to_HubCity_km, 
+        z = ~pop_density_psqm,
+        color = ~as.factor(cluster),
+        colors = c("red", "blue", "green"),
+        text = ~ENGLISH,
+        hoverinfo = "text",
+        type = "scatter3d",
+        mode = "markers",
+        marker = list(size = 10)) %>%
+  layout(title = "County Clusters - 3D Visualization",
+         scene = list(
+           xaxis = list(title = "Mean Income 2024"),
+           yaxis = list(title = "Mean Distance to Hub City (Km)"),
+           zaxis = list(title = "Population Density psqm")
+         ))
+```
+
+Clear separation has occurred. These categories clearly represent Dublin, Minor City counties and Rural counties.
+
+We can create a filtered data set which ignores Dublin and the Minor City counties as we hope to achieve better distribution across the rural areas since they have less EV uptake as seen in the following.
+
+(Note that while city counties here also have smaller proportion so another suitable solution would simply be to take all counties with a sub 15% proportion as a cluster however for the sake of unity it is valuable to just look at the rural ones and treat the other cities as individual cases. There is also another clear reason why the higher proportion cities are where they are which will become obvious later, if not now)
+
+```{r echo = FALSE}
+ggplot(data,aes(x = ev_proportion_24,y = ENGLISH,color = as.factor(cluster))) + geom_point(size = 3,show.legend = FALSE)+
+  scale_color_manual(values = c("red", "blue", "green")) +
+  labs(
+    x = "EV proportion 2024 (%)",
+    y = "County"
+  )
+```
+
+We can now move to running models on the rural counties, our first being a quasi binomial glm on the proportion of electric vehicles to other categories (where we set our proportion to a decimal as opposed to percentage to fit the binomial)
+
+```{r echo = FALSE}
+data_rural <- data[!data$ENGLISH %in% c("dublin","cork","limerick","meath","galway","wicklow","kildare"), ]
+
+qbinmod_ndc <- glm((ev_proportion_24 / 100) ~ mean_income_2024 + Mean_Dist_to_HubCity_km  + charge_loc_psqm + pop_density_psqm + distance,
+                   data = data_rural,
+                   family = quasibinomial())
+plot(qbinmod_ndc)
+summary(qbinmod_ndc)
+
+```
+
+While not perfect, likely due to small data size, our plots do indicate a generally well fitted model. Our biggest takeaway is a negative correlation between mean distance to hub city and electric vehicle proportion. This would make sense considering the limited distance of EVs so since farther distances are needed to travel, EV's are not as practical. Outside of this there are no glaring correlations. We can also look at a model based on the distribution of charge locations per square metre as follows.
+
+```{r echo = FALSE}
+model2 <- glm(charge_loc_psqm ~ distance  + 
+                mean_income_2024  + ev_proportion_24 +grant_pp,
+              data = data_rural,
+              family = gaussian())
+
+plot(model2)
+summary(model2)
+
+```
+
+This gives us little to no correlation on any front while fitting an okay model. This may indicate a poor placement strategy of the charging stations around the country since they are not correlated by any significant statistic (other than population density which is obvious in a sense).
+
+However since we have the distance to hub city as an indicator, using open source maps. we can map out the locations of charging stations and compare them to the roadmap and EV proportions of the country as such.
+
+```{r echo = FALSE}
+library(sf)
+library(nngeo)
+library(ggplot2)
+library(viridis)
+
+shapefile_clean <- read_sf("~/RMDs/Road_Network/Road_Charge_Network.shp")
+data_sf <- read_sf("~/RMDs/County_Shapeframe/counties.shp")
+ggplot()    +
+  geom_sf(aes(fill = ev_p_24), color = "grey80", size = 0.3,alpha = 0.6,data = data_sf) +
+  scale_fill_viridis_c(option = "plasma", 
+                       name = "Proportion of\nEVs",
+                       na.value = "grey40") +
+  geom_sf(data = shapefile_clean, 
+          aes(color = avg_dist_3), 
+          size = 1,
+          alpha = 0.9) +
+  scale_color_viridis_c(option = "mako", 
+                        name = "Average Distance to\nnearest 5 chargers",
+                        trans = "log",  
+                        direction = 1)  +
+  
+  labs(title = "EV Charging Stations Networks") +
+  theme_minimal()
+```
+
+Here we can see, where the darker roads are roads which have better connectability to charger systems ( average distance to the closest five chargers), that roads leading to Dublin are much more connected. This fits the hypothesis that the EV network in Ireland revolves around dublin. With the underlay of the ev proportion heatmap we can see the network tends to favor high proportion areas. This also explains earlier the proportion of certain cities still being low due to their distance from Dublin. This is likely due to the more progessive nature of the capital and other economic factors such as being a hub for tech areas which are more likely to employ EV drivers, of course a lot of that is speculative however without exact data, which would have to be surveyed ( a task which was not feasible for us in this timeframe). That is another important footnote in this project, data was not necessarily specific and assumed even distribution around counties which of course isn't true. Greater data would greatly help the analysis and approach to solution. Income did not play a huge role in this study likely due to data points not being specific enough despite income playing a huge role in the uptake of electric vehicles due to a lacking second hand market and a general increase in cost even including vehicle grants. Electric vehicle uptake, similar to many other sustainability goals, requires greater social equity. Charger networks are a valuable way to increase uptake however since they have a minimal negative impact on social equity.
+
+Thus the best solution would be to implement a better connected network of EV chargers. However we have the problem that, unlike fuel based vehicles, EV charging does not take negligible time and even with fast chargers there is a wait involved in charging so those who commute to dublin. This can be seen by a cutoff of these strong networks.
+
+We can use network analysis on these less connected networks to improve the connectability. Since distance to hub city was a larger factor than distance to Dublin in rural areas, the solution would seem to increase the connected of networks near hub cities, with Dublin being the only strongly connected area on the map.
+
+Data Sources:
+
+Chargers, Roads and Shapefiles: Open Source Maps (OSM)
+
+Distance to nearest Hub City: bluejayliveability.com
+
+Car Registration Details: SIMI Motorstats
+
+Income, Population, Area: CSO
+
+Grant Data : SEAI LA-CAP data <https://public.tableau.com/views/LA-CAPDashboard/HomeEnergyUpgrades>
